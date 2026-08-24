@@ -6,8 +6,8 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -19,7 +19,7 @@ import java.io.IOException;
 @RestController
 @RequestMapping("/api/image")
 public class ImageProcessingController {
-    private static final Logger logger = LogManager.getLogger(ImageProcessingController.class);
+    private static final Logger logger = LoggerFactory.getLogger(ImageProcessingController.class);
 
     private final ImageProcessingService imageProcessingService;
     private final ZipService zipService;
