@@ -1,7 +1,11 @@
 package com.edu.imageconversion.services;
 
+import org.apache.batik.dom.GenericDOMImplementation;
+import org.apache.batik.svggen.SVGGraphics2D;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
+import org.w3c.dom.DOMImplementation;
+import org.w3c.dom.Document;
 
 import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
@@ -21,15 +25,10 @@ import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
-import org.apache.batik.dom.GenericDOMImplementation;
-import org.apache.batik.svggen.SVGGraphics2D;
-import org.w3c.dom.DOMImplementation;
-import org.w3c.dom.Document;
-
 @Service
 public class ImageProcessingService {
     private final SvgOptimizationService svgOptimizationService;
-    private final ForkJoinPool forkJoinPool;
+    ForkJoinPool forkJoinPool;
 
     public ImageProcessingService(SvgOptimizationService svgOptimizationService) {
         this.svgOptimizationService = svgOptimizationService;
@@ -142,84 +141,98 @@ public class ImageProcessingService {
         return byteArrayOutputStream.toByteArray();
     }
 
-    public byte[][] convertImages(MultipartFile[] files, String format, float quality) throws IOException {
+    public byte[][] convertImages(
+            MultipartFile[] files,
+            String format,
+            float quality
+    ) throws IOException {
+
         byte[][] results = new byte[files.length][];
+
         for (int i = 0; i < files.length; i++) {
-            BufferedImage inputImage = ImageIO.read(files[i].getInputStream());
-            if (inputImage == null) {
-                throw new IOException("Could not open or find the image at index " + i);
-            }
-
-            // Убедитесь, что размеры результирующего изображения совпадают с исходными
-            int width = inputImage.getWidth();
-            int height = inputImage.getHeight();
-
-            BufferedImage result = removeBackground(inputImage);
-
-            // После удаления фона проверим, что размеры совпадают
-            if (result.getWidth() != width || result.getHeight() != height) {
-                BufferedImage correctedResult = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
-                Graphics2D g = correctedResult.createGraphics();
-                g.drawImage(result, 0, 0, width, height, null);
-                g.dispose();
-                result = correctedResult;
-            }
-
-            if ("svg".equalsIgnoreCase(format)) {
-                byte[] svgBytes = bufferedImageToSvg(result);
-                try {
-                    results[i] = svgOptimizationService.optimizeSvg(svgBytes);
-                } catch (Exception e) {
-                    throw new IOException("SVG optimization failed for image at index " + i, e);
-                }
-            } else {
-                results[i] = bufferedImageToByteArray(result, format, quality);
-            }
+            results[i] = convertSingleImage(
+                    files[i],
+                    format,
+                    quality,
+                    i
+            );
         }
+
         return results;
     }
 
-    public byte[][] convertImagesParallel(MultipartFile[] files, String format, float quality) throws IOException {
-        return forkJoinPool.submit(() ->
-                IntStream.range(0, files.length)
-                        .parallel()
-                        .mapToObj(i -> {
-                            try {
-                                BufferedImage inputImage = ImageIO.read(files[i].getInputStream());
-                                if (inputImage == null) {
-                                    throw new IOException("Could not open or find the image at index " + i);
+    public byte[][] convertImagesParallel(
+            MultipartFile[] files,
+            String format,
+            float quality
+    ) throws IOException {
+
+        try {
+            return forkJoinPool.submit(() ->
+                    IntStream.range(0, files.length)
+                            .parallel()
+                            .mapToObj(i -> {
+                                try {
+                                    return convertSingleImage(
+                                            files[i],
+                                            format,
+                                            quality,
+                                            i
+                                    );
+                                } catch (IOException exception) {
+                                    throw new ImageConversionRuntimeException(
+                                            i,
+                                            exception
+                                    );
                                 }
+                            })
+                            .toArray(byte[][]::new)
+            ).join();
 
-                                // Убедитесь, что размеры результирующего изображения совпадают с исходными
-                                int width = inputImage.getWidth();
-                                int height = inputImage.getHeight();
+        } catch (ImageConversionRuntimeException exception) {
+            throw new IOException(
+                    "Image conversion failed at index "
+                            + exception.index(),
+                    exception.getCause()
+            );
+        }
+    }
 
-                                BufferedImage result = removeBackground(inputImage);
+    private byte[] convertSingleImage(
+            MultipartFile file,
+            String format,
+            float quality,
+            int index
+    ) throws IOException {
 
-                                // После удаления фона проверим, что размеры совпадают
-                                if (result.getWidth() != width || result.getHeight() != height) {
-                                    BufferedImage correctedResult = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
-                                    Graphics2D g = correctedResult.createGraphics();
-                                    g.drawImage(result, 0, 0, width, height, null);
-                                    g.dispose();
-                                    result = correctedResult;
-                                }
+        BufferedImage inputImage =
+                ImageIO.read(file.getInputStream());
 
-                                if ("svg".equalsIgnoreCase(format)) {
-                                    byte[] svgBytes = bufferedImageToSvg(result);
-                                    try {
-                                        return svgOptimizationService.optimizeSvg(svgBytes);
-                                    } catch (Exception e) {
-                                        throw new IOException("SVG optimization failed for image at index " + i, e);
-                                    }
-                                } else {
-                                    return bufferedImageToByteArray(result, format, quality);
-                                }
-                            } catch (IOException e) {
-                                throw new RuntimeException(e);
-                            }
-                        })
-                        .toArray(byte[][]::new)
-        ).join();
+        if (inputImage == null) {
+            throw new IOException(
+                    "Could not open image at index " + index
+            );
+        }
+
+        BufferedImage result = removeBackground(inputImage);
+
+        if ("svg".equalsIgnoreCase(format)) {
+            byte[] svgBytes = bufferedImageToSvg(result);
+
+            try {
+                return svgOptimizationService.optimizeSvg(svgBytes);
+            } catch (Exception exception) {
+                throw new IOException(
+                        "SVG optimization failed at index " + index,
+                        exception
+                );
+            }
+        }
+
+        return bufferedImageToByteArray(
+                result,
+                format,
+                quality
+        );
     }
 }
